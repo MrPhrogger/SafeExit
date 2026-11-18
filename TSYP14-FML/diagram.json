@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "author": "SafeExit",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0 },
+    { "type": "wokwi-dht22",   "id": "dht1",  "top": -80, "left": 120, "attrs": {} },
+    { "type": "wokwi-lcd1602", "id": "lcd1",  "top": 150, "left": 300, "attrs": { "pins": "i2c", "i2cAddress": "0x27" } },
+    { "type": "wokwi-servo",   "id": "servo1","top": -110, "left": 260, "attrs": {} },
+    { "type": "wokwi-buzzer",  "id": "bz1",   "top": 130, "left": -120, "attrs": { "volume": "0.1" } },
+    { "type": "wokwi-led",     "id": "ledG",  "top": -30, "left": 400, "attrs": { "color": "green" } },
+    { "type": "wokwi-led",     "id": "ledY",  "top": 10,  "left": 400, "attrs": { "color": "yellow" } },
+    { "type": "wokwi-led",     "id": "ledR",  "top": 50,  "left": 400, "attrs": { "color": "red" } },
+    { "type": "wokwi-resistor","id": "rG",    "top": -30, "left": 450, "attrs": { "value": "220" } },
+    { "type": "wokwi-resistor","id": "rY",    "top": 10,  "left": 450, "attrs": { "value": "220" } },
+    { "type": "wokwi-resistor","id": "rR",    "top": 50,  "left": 450, "attrs": { "value": "220" } },
+    { "type": "wokwi-potentiometer", "id": "pot5",  "top": 180, "left": -120, "attrs": { "value": "800" } },
+    { "type": "wokwi-potentiometer", "id": "pot135","top": 260, "left": -120, "attrs": { "value": "800" } }
+  ],
+  "connections": [
+    [ "esp:4",     "dht1:SDA",  "green", [] ],
+    [ "esp:3V3",   "dht1:VCC",  "red",   [] ],
+    [ "esp:GND.1", "dht1:GND",  "black", [] ],
+
+    [ "esp:21",    "lcd1:SDA",  "green", [] ],
+    [ "esp:22",    "lcd1:SCL",  "blue",  [] ],
+    [ "esp:5V",    "lcd1:VCC",  "red",   [] ],
+    [ "esp:GND.2", "lcd1:GND",  "black", [] ],
+
+    [ "esp:13",    "servo1:PWM",  "orange", [] ],
+    [ "esp:5V",    "servo1:V+",   "red",    [] ],
+    [ "esp:GND.3", "servo1:GND",  "black",  [] ],
+
+    [ "esp:12",    "bz1:1", "purple", [] ],
+    [ "esp:GND.1","bz1:2", "black",  [] ],
+
+    [ "esp:25", "ledG:A", "green", [] ],
+    [ "ledG:C", "rG:1",   "green", [] ],
+    [ "rG:2",   "esp:GND.1","black", [] ],
+
+    [ "esp:26", "ledY:A", "yellow", [] ],
+    [ "ledY:C", "rY:1",   "yellow", [] ],
+    [ "rY:2",   "esp:GND.1","black", [] ],
+
+    [ "esp:27", "ledR:A", "red", [] ],
+    [ "ledR:C", "rR:1",   "red", [] ],
+    [ "rR:2",   "esp:GND.1","black", [] ],
+
+    [ "pot5:VCC",  "esp:3V3",  "red",   [] ],
+    [ "pot5:SIG",  "esp:34",   "green", [] ],
+    [ "pot5:GND",  "esp:GND.1","black", [] ],
+
+    [ "pot135:VCC","esp:3V3",  "red",   [] ],
+    [ "pot135:SIG","esp:35",   "green", [] ],
+    [ "pot135:GND","esp:GND.1","black", [] ]
+  ]
+}

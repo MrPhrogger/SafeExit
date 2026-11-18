@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../../gesture_project"
+		},
+		{
+			"name": "TSYP14-FML",
+			"path": ".."
+		},
+		{
+			"name": "TSYP14-Exit",
+			"path": "../../TSYP14-Exit"
+		}
+	],
+	"settings": {}
+}
