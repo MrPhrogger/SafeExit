@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "SafeExit",
+			"path": ".."
+		},
+		{
+			"name": "TSYP14-Exit",
+			"path": "."
+		}
+	],
+	"settings": {}
+}

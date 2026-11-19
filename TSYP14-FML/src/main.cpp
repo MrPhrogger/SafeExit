@@ -1,11 +1,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <esp_wifi.h> 
+#include <esp_wifi.h>
 #include <esp_now.h>
 #include <DHT.h>
 #include <ESP32Servo.h>
 #include <math.h>
+#include "model.h" 
 
+// ── Pins ─────────────────────────────────────────
 #define MQ5_PIN    34
 #define MQ135_PIN  35
 #define DHT_PIN    4
@@ -16,14 +18,6 @@
 
 #define VALVE_OPEN   0
 #define VALVE_CLOSED 90
-
-#define MQ5_DANGER_ABS      2600 
-#define MQ135_DANGER_ABS    2500 
-#define SMOKE_SLOPE_THRESH  35.0
-#define LEAK_SLOPE_THRESH   50.0
-#define HUM_STEAM_STD_TH    2.0
-#define TEMP_STEAM_SLOPE    0.5
-#define HUM_STEAM_SLOPE     0.3
 
 enum State { STATE_NORMAL, STATE_COOKING, STATE_GAS, STATE_FIRE, STATE_FAULT };
 const char* stateName(State s) {
@@ -40,7 +34,6 @@ const char* stateName(State s) {
 DHT dht(DHT_PIN, DHT11);
 Servo valve;
 
-// Exit Node MAC
 uint8_t exitNodeMac[] = {0x38, 0x18, 0x2B, 0xB1, 0x6C, 0x30}; 
 
 typedef struct __attribute__((packed)) {
@@ -54,16 +47,14 @@ typedef struct __attribute__((packed)) {
 uint16_t seqCounter = 0;
 uint32_t lastTx = 0;
 
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("Send Status: ");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
-}
-
 #define WINDOW_SAMPLES 10
 struct Sample { uint32_t t; int mq5; int mq135; float temp; float hum; };
 Sample buffer[WINDOW_SAMPLES];
 uint8_t head = 0;
 uint8_t count = 0;
+
+float lastValidTemp = 0.0;
+float lastValidHum = 0.0;
 
 struct Features {
   float mq5_mean, mq5_max, mq5_std, mq5_slope;
@@ -100,40 +91,37 @@ Features computeFeatures() {
   return f;
 }
 
-bool sensorFault(const Sample& s, const Features& f) {
-  if (s.mq5 <= 10 || s.mq5 >= 4085) return true;
-  if (s.mq135 <= 10 || s.mq135 >= 4085) return true;
-  if (isnan(s.temp) || s.temp < -10 || s.temp > 60) return true;
-  if (isnan(s.hum) || s.hum < 5 || s.hum > 98) return true;
-  if (count == WINDOW_SAMPLES && f.mq5_std == 0.0 && f.mq135_std == 0.0) return true;
-  return false;
-}
-
 State safetyOverride(const Features& f, bool fault) {
   if (fault) return STATE_FAULT;
-  if (f.mq5_max > MQ5_DANGER_ABS) return STATE_GAS;
-  if (f.mq135_max > MQ135_DANGER_ABS) return STATE_FIRE;
-  bool leak = (f.mq5_slope > LEAK_SLOPE_THRESH) && (f.hum_std < HUM_STEAM_STD_TH);
+  if (f.mq5_max > 2600) return STATE_GAS;
+  if (f.mq135_max > 2500) return STATE_FIRE;
+  bool leak = (f.mq5_slope > 50.0) && (f.hum_std < 2.0);
   if (leak) return STATE_GAS;
-  bool steam = (f.temp_slope > TEMP_STEAM_SLOPE) && (f.hum_slope > HUM_STEAM_SLOPE) && (f.mq5_slope < LEAK_SLOPE_THRESH);
+  bool steam = (f.temp_slope > 0.5) && (f.hum_slope > 0.3) && (f.mq5_slope < 50.0);
   if (steam) return STATE_COOKING;
-  bool smoke = (f.mq135_slope > SMOKE_SLOPE_THRESH) && (f.mq5_slope < LEAK_SLOPE_THRESH);
+  bool smoke = (f.mq135_slope > 35.0) && (f.mq5_slope < 50.0);
   if (smoke) return STATE_FIRE;
   return STATE_NORMAL;
 }
 
-uint32_t lastBlink = 0;
-bool blinkState = false;
+bool sensorFault(const Sample& s, const Features& f) {
+  if (s.mq5 <= 10 || s.mq5 >= 4085) return true;
+  if (s.mq135 <= 10 || s.mq135 >= 4085) return true;
+  if (s.temp < -10 || s.temp > 60) return true;
+  if (s.hum < 5 || s.hum > 98) return true;
+  return false;
+}
 
 void applyState(State s) {
-  if (millis() - lastBlink > 250) { blinkState = !blinkState; lastBlink = millis(); }
-  digitalWrite(LED_G, LOW); digitalWrite(LED_Y, LOW); digitalWrite(LED_R, LOW);
-  if (s == STATE_NORMAL || s == STATE_COOKING) digitalWrite(LED_G, HIGH);
-  if (s == STATE_GAS) digitalWrite(LED_Y, blinkState ? HIGH : LOW);
-  if (s == STATE_FIRE) digitalWrite(LED_R, blinkState ? HIGH : LOW);
-  if (s == STATE_FAULT) digitalWrite(LED_Y, HIGH);
-  if (s == STATE_GAS || s == STATE_FIRE) valve.write(VALVE_CLOSED);
-  else valve.write(VALVE_OPEN);
+  digitalWrite(LED_G, s == STATE_NORMAL);
+  digitalWrite(LED_Y, s == STATE_COOKING || s == STATE_FAULT);
+  digitalWrite(LED_R, s == STATE_GAS || s == STATE_FIRE);
+
+  if (s == STATE_GAS || s == STATE_FIRE) {
+    valve.write(VALVE_CLOSED);
+  } else {
+    valve.write(VALVE_OPEN);
+  }
 }
 
 void sendState(State s) {
@@ -143,48 +131,99 @@ void sendState(State s) {
 }
 
 uint32_t lastSample = 0;
+uint32_t bootTime = 0;
 State prevState = STATE_NORMAL;
+
+// ML Debounce Variables
+State pendingState = STATE_NORMAL;
+int stateConfirmCount = 0;
 
 void setup() {
   Serial.begin(115200);
   delay(2000); 
+  
+  pinMode(LED_G, OUTPUT); 
+  pinMode(LED_Y, OUTPUT); 
+  pinMode(LED_R, OUTPUT);
+  digitalWrite(LED_G, LOW);
+  digitalWrite(LED_Y, LOW);
+  digitalWrite(LED_R, LOW);
 
-  pinMode(LED_G, OUTPUT); pinMode(LED_Y, OUTPUT); pinMode(LED_R, OUTPUT);
   valve.attach(SERVO_PIN, 500, 2400);
   valve.write(VALVE_OPEN);
   dht.begin();
-
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
 
   WiFi.mode(WIFI_STA);
-  
-  // 🔥 CRITICAL FIX: LOCK THE CHANNEL TO 1 🔥
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("ESP-NOW Init Failed");
-    return;
-  }
-  esp_now_register_send_cb(OnDataSent);
-
+  esp_now_init();
+  
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, exitNodeMac, 6);
-  peer.channel = 1; // Match the channel
+  peer.channel = 1;
   peer.encrypt = false;
   esp_now_add_peer(&peer);
 
-  Serial.print("Detection Node MAC: ");
-  Serial.println(WiFi.macAddress());
-  Serial.println("--- SafeExit Detection Node ---");
+  bootTime = millis();
+
+  // ── TEST VECTOR (Runs once on boot) ─────────────
+  Serial.println("\n--- RUNNING TEST VECTOR ---");
+  Sample testBuffer[10] = {
+    {0, 1040, 990, 26.4, 48.0}, {0, 1050, 988, 26.4, 48.0}, {0, 1045, 992, 26.4, 48.0},
+    {0, 1300, 995, 26.5, 48.0}, {0, 1650, 1000, 26.5, 48.1}, {0, 1980, 1005, 26.5, 48.1},
+    {0, 2300, 1010, 26.5, 48.1}, {0, 2600, 1020, 26.5, 48.1}, {0, 2850, 1030, 26.6, 48.0},
+    {0, 3050, 1040, 26.6, 48.0}
+  };
+  
+  for(int i=0; i<10; i++) { buffer[i] = testBuffer[i]; }
+  count = 10;
+  Features tf = computeFeatures();
+  
+  float testArr[16] = {
+      tf.mq5_mean, tf.mq5_max, tf.mq5_std, tf.mq5_slope,
+      tf.mq135_mean, tf.mq135_max, tf.mq135_std, tf.mq135_slope,
+      tf.temp_mean, tf.temp_max, tf.temp_std, tf.temp_slope,
+      tf.hum_mean, tf.hum_max, tf.hum_std, tf.hum_slope
+  };
+  
+  Serial.printf("Features: %.3f, %.3f, %.3f, %.3f\n", testArr[0], testArr[1], testArr[2], testArr[3]);
+  Serial.printf("Features: %.3f, %.3f, %.3f, %.3f\n", testArr[4], testArr[5], testArr[6], testArr[7]);
+  Serial.printf("Features: %.3f, %.3f, %.3f, %.3f\n", testArr[8], testArr[9], testArr[10], testArr[11]);
+  Serial.printf("Features: %.3f, %.3f, %.3f, %.3f\n", testArr[12], testArr[13], testArr[14], testArr[15]);
+  
+  uint8_t testPred = run_tinyml_model(testArr);
+  Serial.printf("Prediction: %d (Expected: 2)\n", testPred);
+  Serial.println("---------------------------\n");
+  
+  // Reset for normal operation
+  count = 0;
+  head = 0;
 }
 
+// ── LOOP FUNCTION (This was missing!) ────────────
 void loop() {
   if (millis() - lastSample >= 500) {
     lastSample = millis();
+    
+    // DHT Fix: Read every 2 seconds, ignore NaN
+    static uint32_t lastDhtRead = 0;
+    if (millis() - lastDhtRead > 2000) {
+      lastDhtRead = millis();
+      float t = dht.readTemperature();
+      float h = dht.readHumidity();
+      if (!isnan(t) && !isnan(h)) {
+        lastValidTemp = t;
+        lastValidHum = h;
+      }
+    }
+
     Sample s;
-    s.t = millis(); s.mq5 = analogRead(MQ5_PIN); s.mq135 = analogRead(MQ135_PIN);
-    s.temp = dht.readTemperature(); s.hum = dht.readHumidity();
+    s.t = millis(); 
+    s.mq5 = analogRead(MQ5_PIN); 
+    s.mq135 = analogRead(MQ135_PIN);
+    s.temp = lastValidTemp; 
+    s.hum = lastValidHum;
 
     buffer[head] = s;
     head = (head + 1) % WINDOW_SAMPLES;
@@ -192,20 +231,54 @@ void loop() {
 
     Features f = computeFeatures();
     bool fault = sensorFault(s, f);
-    State currentState = safetyOverride(f, fault);
+    
+    State currentState = STATE_NORMAL;
+
+    // Only run ML if warm-up (5 min) is done AND window is full
+    if (millis() - bootTime > 300000 && count == WINDOW_SAMPLES) {
+      float featureArray[16] = {
+        f.mq5_mean, f.mq5_max, f.mq5_std, f.mq5_slope,
+        f.mq135_mean, f.mq135_max, f.mq135_std, f.mq135_slope,
+        f.temp_mean, f.temp_max, f.temp_std, f.temp_slope,
+        f.hum_mean, f.hum_max, f.hum_std, f.hum_slope
+      };
+      
+      State mlState = (State)run_tinyml_model(featureArray);
+      State safeState = safetyOverride(f, fault);
+      if (safeState != STATE_NORMAL) mlState = safeState; // Safety wins
+
+      // Debounce logic (Require 3 consecutive windows)
+      if (mlState == pendingState) {
+        stateConfirmCount++;
+      } else {
+        pendingState = mlState;
+        stateConfirmCount = 1;
+      }
+
+      if (stateConfirmCount >= 3) {
+        currentState = pendingState;
+      } else {
+        currentState = prevState; // Keep previous state until confirmed
+      }
+    } else {
+      // Still warming up or filling buffer
+      currentState = fault ? STATE_FAULT : STATE_NORMAL; 
+    }
 
     if (currentState != prevState) {
       sendState(currentState);
       prevState = currentState;
       Serial.printf("STATE CHANGED -> %s\n", stateName(currentState));
     }
-    applyState(currentState);
+    
+    // Update the LEDs
+    applyState(prevState);
   }
 
+  // Heartbeat
   if (millis() - lastTx > 1000) {
     sendState(prevState);
   }
   
-  applyState(prevState); 
   delay(10);
 }
