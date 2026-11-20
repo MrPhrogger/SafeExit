@@ -2,6 +2,9 @@
 
 SafeExit is a low-cost, infrastructure-independent safety system designed for homes, schools, and small businesses. It uses Edge AI (TinyML) to distinguish between cooking steam and real gas leaks, acts automatically by closing a gas valve, and uses RFID to track evacuation roll-calls during an emergency.
 
+ ![Demo](./Preview/SafeExit-Preview.gif)
+
+
 ## 📁 Repository Structure
 This is a monorepo containing the firmware for both nodes in the system:
 *   **`Detection_Node/`**: The hazard sensing node (MQ-5, MQ-135, DHT11, Servo).
